@@ -1,138 +1,139 @@
-ï»¿
-#include <Windows.h>
+// SO IN1 21A LAB07
+// PRZEMYS£AW TARKOWSKI
+// tp54938@zut.edu.pl
+
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <time.h>
 
-// Struktura przechowujÄ…ca dane przekazywane do wÄ…tkÃ³w
-struct ThreadData {
+#define MAX_THREADS 100
+
+// Struktura przechowuj¹ca dane przekazywane do w¹tków
+typedef struct {
     int start;
     int end;
-    double* globalResult;
-    HANDLE mutex;
-};
+    double result;
+} ThreadData;
 
-// Funkcja obliczajÄ…ca wartoÅ›Ä‡ Ï€ za pomocÄ… wzoru Leibniza
-double CalculatePI(int n) {
-    double result = 0.0;
+pthread_mutex_t mutex;
+double globalProduct = 1.0;
 
-    for (int i = 0; i < n; i++) {
-        double licznik = (i % 2 == 0) ? 1.0 : -1.0;
-        double mianownik = 2.0 * i + 1.0;
-        result += licznik / mianownik;
+// Funkcja wykonywana przez w¹tki
+void* calculateWallis(void* arg) {
+    ThreadData* data = (ThreadData*)arg;
+    double result = 1.0;
+
+    // Wypisanie informacji o zakresie przetwarzanym przez w¹tek z poprawion¹ kolejnoœci¹ first
+    printf("Thread #%ld size = %d first = %d\n",
+        pthread_self(), data->end - data->start, data->start);
+
+    // Obliczenia w zakresie
+    for (int i = data->start; i <= data->end; i++) {
+        double licznik = (4.0 * i * i);
+        double mianownik = (2.0 * i - 1) * (2.0 * i + 1);
+        result *= licznik / mianownik;
     }
-    return result * 4.0;
+
+    // Sekcja krytyczna - aktualizacja wspólnej zmiennej globalnej
+    pthread_mutex_lock(&mutex);
+    globalProduct *= result;
+    pthread_mutex_unlock(&mutex);
+
+    // Wypisanie informacji o iloczynie w zakresie
+    printf("Thread #%ld prod = %.17f\n", pthread_self(), result);
+
+    pthread_exit(NULL);
 }
 
-// Funkcja wykonywana przez wÄ…tki
-DWORD WINAPI ThreadFunction(LPVOID lpParam) {
-    struct ThreadData* data = (struct ThreadData*)lpParam;
-    
-    double result = 0.0;
+// Funkcja obliczaj¹ca PI bez u¿ycia w¹tków
+double calculatePI(double n) {
+    double iloczyn = 1.0;
 
-// Wypisanie identyfikatora wÄ…tku, rozmiaru zakresu i pierwszego elementu
-    printf("Thread #%lu size = %d first = %d\n", GetCurrentThreadId(), data->end - data->start + 1, data->start);
-
-// Obliczenia w zakresie
-    for (int i = data->start; i <= data->end; i++) {
-        double licznik = (i % 2 == 0) ? 1.0 : -1.0;
-        double mianownik = 2.0 * i + 1.0;
-        result += licznik / mianownik;
+    for (double i = 1; i <= n; i++) {
+        double licznik = (4.0 * i * i);
+        double mianownik = (2.0 * i - 1) * (2.0 * i + 1);
+        iloczyn *= licznik / mianownik;
     }
 
-// Sekcja krytyczna - aktualizacja zmiennej globalnej
-    WaitForSingleObject(data->mutex, INFINITE);
-   
-    *(data->globalResult) += result;
-
-// Zwolnienie mutexa
-    ReleaseMutex(data->mutex);
-
-    printf("Thread #%lu sum = %.17f\n", GetCurrentThreadId(), result);
-    return 0;
+    return 2.0 * iloczyn;
 }
 
 int main(int argc, char* argv[]) {
+// Sprawdzenie poprawnoœci argumentów wywo³ania programu 
     if (argc != 3) {
-        fprintf(stderr, "Uzycie: %s <liczba_wyrazow> <liczba_watkow>\n", argv[0]);
-        return 1;
+        printf("U¿ycie: %s <liczba_wyrazow> <liczba_watkow>\n", argv[0]);
+        return EXIT_FAILURE;
     }
 
     int n = atoi(argv[1]);
     int w = atoi(argv[2]);
 
     if (n <= 1 || n >= 1000000001 || w <= 1 || w >= 101) {
-        fprintf(stderr, "Niepoprawne argumenty. Sprawdz warunki dla n i w.\n");
-        return 1;
+        printf("Niepoprawne argumenty. SprawdŸ warunki dla n i w.\n");
+        return EXIT_FAILURE;
     }
 
-// Inicjalizacja globalnej zmiennej i mutexa
-    double globalResult ;
-    HANDLE mutex = CreateMutex(NULL, FALSE, NULL);
-    if (mutex == NULL) {
-        fprintf(stderr, "Blad inicjalizacji mutexa\n");
-        return 1;
-    }
+    pthread_t threads[MAX_THREADS];
+    ThreadData threadData[MAX_THREADS];
+    pthread_mutex_init(&mutex, NULL);
 
-// Utworzenie tablicy wÄ…tkÃ³w
-    HANDLE* threads = (HANDLE*)malloc(w * sizeof(HANDLE));
-    if (threads == NULL) {
-        fprintf(stderr, "Blad alokacji pamieci na watki\n");
-        return 1;
-    }
-
-// Utworzenie struktur danych dla kaÅ¼dego wÄ…tka
-    struct ThreadData* threadData = (struct ThreadData*)malloc(w * sizeof(struct ThreadData));
-    if (threadData == NULL) {
-        fprintf(stderr, "Blad alokacji pamieci na dane watkow\n");
-        return 1;
-    }
-
-// Rozdzielenie zakresu dla wÄ…tkÃ³w
+// Obliczanie z uzyciem wyników
     int elementsPerThread = n / w;
     int remainingElements = n % w;
-    int currentStart = 0;
 
-// Utworzenie i uruchomienie wÄ…tkÃ³w z pomiarem czasu
-    clock_t start = clock();
+    struct timespec start, finish;
+    double elapsed;
 
+// Pomiar czasu rozpoczêcia
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+// Tworzenie i uruchamianie w¹tków
     for (int i = 0; i < w; i++) {
-        threadData[i].start = currentStart;
-        threadData[i].end = currentStart + elementsPerThread - 1 + (i < remainingElements ? 1 : 0);
-        threadData[i].globalResult = &globalResult;
-        threadData[i].mutex = mutex;
+        threadData[i].start = i * elementsPerThread + 1;
+        threadData[i].end = threadData[i].start + elementsPerThread - 1;
 
-// Utworzenie wÄ…tku
-        threads[i] = CreateThread(NULL, 0, ThreadFunction, &threadData[i], 0, NULL);
-        if (threads[i] == NULL) {
-            fprintf(stderr, "Blad tworzenia watku\n");
-            return 1;
+        if (remainingElements > 0) {
+            threadData[i].end++;
+            remainingElements--;
         }
-        currentStart = threadData[i].end + 1;
+// Tworzenie w¹tku
+        pthread_create(&threads[i], NULL, calculateWallis, (void*)&threadData[i]);
     }
 
-// Oczekiwanie na zakoÅ„czenie wÄ…tkÃ³w
-    WaitForMultipleObjects(w, threads, TRUE, INFINITE);
+// Oczekiwanie na zakoñczenie w¹tków
+    for (int i = 0; i < w; i++) {
+        pthread_join(threads[i], NULL);
+    }
 
-    clock_t end = clock();
-    double timesUpThreads = ((double)(end - start)) / CLOCKS_PER_SEC;
+// Pomiar czasu zakoñczenia
+    clock_gettime(CLOCK_MONOTONIC, &finish);
 
-// Utworzenie i uruchomienie liczenia PI z pomiarem czasu
-    start = clock();
+// Obliczenia i wypisanie wyników z u¿yciem w¹tków
+    elapsed = (finish.tv_sec - start.tv_sec);
+    elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("\nw/Threads: PI=%.17f time=%.5fs\n", globalProduct, elapsed);
 
-    double piWithoutThreads = CalculatePI(n);
+// Zwalnianie zasobów muteksu
+    pthread_mutex_destroy(&mutex);
 
-    end = clock();
-    double timesUpWithoutThreads = ((double)(end - start)) / CLOCKS_PER_SEC;
+// Resetowanie globalnej zmiennej
+    globalProduct = 1.0;
 
-// Wypisanie wynikÃ³w
-    printf("with/ Threads: PI = %.17f time = %.5f sec.\n", globalResult * 4.0, timesUpThreads);
-    printf("without/ Threads: PI = %.17f time = %.5f sec.\n", piWithoutThreads, timesUpWithoutThreads);
+// Pomiar czasu rozpoczêcia ponownego obliczenia bez u¿ycia w¹tków
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-// Zwolnienie zasobÃ³w
-    CloseHandle(mutex);
-    free(threads);
-    free(threadData);
+// Obliczenia bez u¿ycia w¹tków
+    double piWithoutThreads = calculatePI(n);
 
-    return 0;
+// Pomiar czasu zakoñczenia ponownego obliczenia
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+
+// Obliczenia i wypisanie wyników bez u¿ycia w¹tków
+    elapsed = (finish.tv_sec - start.tv_sec);
+    elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("wo/Threads: PI = %.17f time = %.5fs\n", piWithoutThreads, elapsed);
+
+    return EXIT_SUCCESS;
 }
